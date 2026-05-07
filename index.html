@@ -10,6 +10,19 @@
     body {
       margin: 0;
       font-family: Arial, sans-serif;
+      overflow: hidden;
+      background: #000;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+    }
+    canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
     }
     #info {
       position: fixed;
@@ -62,15 +75,47 @@
 <button id="xrButton" onclick="activateXR()">Start AR</button>
 
 <script>
+let activeSession = null;
+
 // ============================================================
 // STEP 1: Setup Canvas dan WebGL untuk WebXR
 // ============================================================
 async function activateXR() {
-  const canvas = document.createElement("canvas");
-  document.body.appendChild(canvas);
-  const gl = canvas.getContext("webgl", {xrCompatible: true});
+  const xrButton = document.getElementById('xrButton');
+  xrButton.disabled = true;
 
-  updateStatus("Initializing WebXR...");
+  if (!window.isSecureContext) {
+    updateStatus("WebXR butuh HTTPS (secure context)");
+    xrButton.disabled = false;
+    return;
+  }
+
+  if (!navigator.xr) {
+    updateStatus("WebXR tidak didukung di browser ini");
+    xrButton.disabled = false;
+    return;
+  }
+
+  if (activeSession) {
+    updateStatus("Session AR sudah aktif");
+    return;
+  }
+
+  let canvas;
+  let gl;
+
+  try {
+    canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    gl = canvas.getContext("webgl", { xrCompatible: true, alpha: true, antialias: true });
+    if (!gl) {
+      throw new Error("WebGL tidak tersedia");
+    }
+
+    // Beberapa device membutuhkan ini agar framebuffer XR valid.
+    await gl.makeXRCompatible();
+
+    updateStatus("Initializing WebXR...");
 
   // ============================================================
   // STEP 2: Setup Scene, Camera, dan Lighting
@@ -90,11 +135,14 @@ async function activateXR() {
   // ============================================================
   const renderer = new THREE.WebGLRenderer({
     alpha: true,
-    preserveDrawingBuffer: true,
+    antialias: true,
     canvas: canvas,
     context: gl
   });
   renderer.autoClear = false;
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 
   // Setup Camera
   const camera = new THREE.PerspectiveCamera();
@@ -106,7 +154,6 @@ async function activateXR() {
   const loader = new THREE.GLTFLoader();
   let reticle;
   let flower;
-  let flowerHolding = false;
 
   // Load Targeting Reticle (Ring untuk menunjukkan tempat placement)
   loader.load("https://immersive-web.github.io/webxr-samples/media/gltf/reticle/reticle.gltf", function(gltf) {
@@ -121,7 +168,8 @@ async function activateXR() {
   // Load 3D Model Bunga Matahari
   loader.load("https://raw.githubusercontent.com/mohraihan00/ar_3d_model/main/woody_-_disney_magic_kingdoms.glb", function(gltf) {
     flower = gltf.scene;
-    updateStatus("Flower model loaded!");
+    flower.scale.set(0.2, 0.2, 0.2);
+    updateStatus("AR model loaded!");
   }, undefined, function(error) {
     console.error("Error loading flower:", error);
   });
@@ -130,17 +178,25 @@ async function activateXR() {
   // STEP 5: Setup WebXR Session
   // ============================================================
   const session = await navigator.xr.requestSession("immersive-ar", {
-    requiredFeatures: ['hit-test']
+    requiredFeatures: ['hit-test'],
+    optionalFeatures: ['dom-overlay'],
+    domOverlay: { root: document.body }
   });
+  activeSession = session;
 
   session.updateRenderState({
-    baseLayer: new XRWebGLLayer(session, gl)
+    baseLayer: new XRWebGLLayer(session, gl, { alpha: true, antialias: true })
   });
 
   // ============================================================
   // STEP 6: Setup Reference Spaces untuk Hit Testing
   // ============================================================
-  const referenceSpace = await session.requestReferenceSpace('local');
+  let referenceSpace;
+  try {
+    referenceSpace = await session.requestReferenceSpace('local-floor');
+  } catch (err) {
+    referenceSpace = await session.requestReferenceSpace('local');
+  }
   const viewerSpace = await session.requestReferenceSpace('viewer');
 
   // Buat Hit Test Source (untuk mendeteksi permukaan nyata)
@@ -152,10 +208,20 @@ async function activateXR() {
   session.addEventListener("select", (event) => {
     if (flower && reticle && reticle.visible) {
       // Buat clone dari flower dan letakkan di posisi reticle
-      const clone = flower.clone();
+      const clone = flower.clone(true);
       clone.position.copy(reticle.position);
+      clone.quaternion.copy(reticle.quaternion);
       scene.add(clone);
-      updateStatus("Flower placed! Tap to place more.");
+      updateStatus("Model placed! Tap to place more.");
+    }
+  });
+
+  session.addEventListener("end", () => {
+    activeSession = null;
+    xrButton.disabled = false;
+    updateStatus("AR session ended");
+    if (canvas && canvas.parentNode) {
+      canvas.parentNode.removeChild(canvas);
     }
   });
 
@@ -190,9 +256,21 @@ async function activateXR() {
       
       if (hitTestResults.length > 0 && reticle) {
         const hitPose = hitTestResults[0].getPose(referenceSpace);
-        reticle.visible = true;
-        reticle.position.setFromMatrixPosition(hitPose.transform.matrix);
-        reticle.updateMatrixWorld(true);
+        if (hitPose) {
+          reticle.visible = true;
+          reticle.position.set(
+            hitPose.transform.position.x,
+            hitPose.transform.position.y,
+            hitPose.transform.position.z
+          );
+          reticle.quaternion.set(
+            hitPose.transform.orientation.x,
+            hitPose.transform.orientation.y,
+            hitPose.transform.orientation.z,
+            hitPose.transform.orientation.w
+          );
+          reticle.updateMatrixWorld(true);
+        }
       } else if (reticle) {
         reticle.visible = false;
       }
@@ -206,7 +284,14 @@ async function activateXR() {
   session.requestAnimationFrame(onXRFrame);
 
   updateStatus("AR Session Active! Look for surfaces...");
-  document.getElementById('xrButton').disabled = true;
+  } catch (error) {
+    console.error("Gagal memulai AR:", error);
+    updateStatus("Gagal memulai AR: " + error.message);
+    xrButton.disabled = false;
+    if (canvas && canvas.parentNode) {
+      canvas.parentNode.removeChild(canvas);
+    }
+  }
 }
 
 // ============================================================
