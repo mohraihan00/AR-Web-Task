@@ -37,7 +37,8 @@
       position: absolute;
       inset: 0;
       z-index: 1;
-      pointer-events: none;
+      pointer-events: auto;
+      touch-action: none;
     }
 
     #info {
@@ -85,6 +86,25 @@
       opacity: 0.6;
       cursor: not-allowed;
     }
+
+    #resetBtn {
+      position: fixed;
+      right: 12px;
+      top: 56px;
+      z-index: 11;
+      border: none;
+      border-radius: 8px;
+      background: #3367d6;
+      color: #fff;
+      padding: 10px 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #resetBtn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
   </style>
 
   <script src="https://unpkg.com/three@0.126.0/build/three.js"></script>
@@ -98,6 +118,7 @@
 </div>
 
 <button id="startBtn">Start Kamera</button>
+<button id="resetBtn" disabled>Reset Model</button>
 
 <div id="overlay">
   <div id="info">
@@ -105,12 +126,13 @@
     <div id="status">Status: Klik Start Kamera.</div>
     <div style="margin-top: 8px; opacity: 0.9;">Model 3D akan langsung tampil di atas feed kamera laptop.</div>
   </div>
-  <div class="hint">Catatan: ini mode overlay webcam, bukan world-tracking AR (karena device tidak support WebXR/ARCore).</div>
+  <div class="hint">Interaksi: drag model untuk geser, scroll/pinch untuk zoom, tombol Reset untuk posisi awal.</div>
 </div>
 
 <script>
   const statusEl = document.getElementById('status');
   const startBtn = document.getElementById('startBtn');
+  const resetBtn = document.getElementById('resetBtn');
   const videoEl = document.getElementById('cameraFeed');
   const layerEl = document.getElementById('threeLayer');
 
@@ -118,6 +140,136 @@
   let scene;
   let camera;
   let model;
+  let modelBaseScale = 0.75;
+  let isDragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  let pinchStartDistance = 0;
+  let pinchStartScale = 0;
+
+  function clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+  }
+
+  function setModelScale(newScale) {
+    if (!model) {
+      return;
+    }
+
+    const scale = clamp(newScale, 0.2, 2.5);
+    model.scale.set(scale, scale, scale);
+  }
+
+  function resetModelTransform() {
+    if (!model) {
+      return;
+    }
+
+    model.position.set(0, -0.75, 0);
+    model.rotation.set(0, 0, 0);
+    setModelScale(modelBaseScale);
+    setStatus('Model di-reset ke posisi awal.');
+  }
+
+  function distanceBetweenTouches(t1, t2) {
+    const dx = t1.clientX - t2.clientX;
+    const dy = t1.clientY - t2.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  function setupInteractions() {
+    const canvas = renderer.domElement;
+
+    canvas.addEventListener('mousedown', (event) => {
+      if (!model) {
+        return;
+      }
+      isDragging = true;
+      lastX = event.clientX;
+      lastY = event.clientY;
+    });
+
+    window.addEventListener('mousemove', (event) => {
+      if (!isDragging || !model) {
+        return;
+      }
+
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      lastX = event.clientX;
+      lastY = event.clientY;
+
+      model.position.x += dx * 0.0035;
+      model.position.y -= dy * 0.0035;
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
+    canvas.addEventListener('wheel', (event) => {
+      if (!model) {
+        return;
+      }
+      event.preventDefault();
+      const currentScale = model.scale.x;
+      const zoomDelta = event.deltaY * -0.0012;
+      setModelScale(currentScale + zoomDelta);
+    }, { passive: false });
+
+    canvas.addEventListener('touchstart', (event) => {
+      if (!model) {
+        return;
+      }
+
+      if (event.touches.length === 1) {
+        isDragging = true;
+        lastX = event.touches[0].clientX;
+        lastY = event.touches[0].clientY;
+      }
+
+      if (event.touches.length === 2) {
+        isDragging = false;
+        pinchStartDistance = distanceBetweenTouches(event.touches[0], event.touches[1]);
+        pinchStartScale = model.scale.x;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (event) => {
+      if (!model) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (event.touches.length === 1 && isDragging) {
+        const x = event.touches[0].clientX;
+        const y = event.touches[0].clientY;
+        const dx = x - lastX;
+        const dy = y - lastY;
+        lastX = x;
+        lastY = y;
+
+        model.position.x += dx * 0.0035;
+        model.position.y -= dy * 0.0035;
+      }
+
+      if (event.touches.length === 2 && pinchStartDistance > 0) {
+        const dist = distanceBetweenTouches(event.touches[0], event.touches[1]);
+        const ratio = dist / pinchStartDistance;
+        setModelScale(pinchStartScale * ratio);
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (event) => {
+      if (event.touches.length === 0) {
+        isDragging = false;
+      }
+      if (event.touches.length < 2) {
+        pinchStartDistance = 0;
+      }
+    });
+  }
 
   function setStatus(text) {
     statusEl.textContent = 'Status: ' + text;
@@ -162,9 +314,11 @@
       (gltf) => {
         model = gltf.scene;
         model.position.set(0, -0.75, 0);
-        model.scale.set(0.75, 0.75, 0.75);
+        modelBaseScale = 0.75;
+        model.scale.set(modelBaseScale, modelBaseScale, modelBaseScale);
         scene.add(model);
-        setStatus('Model muncul di kamera.');
+        resetBtn.disabled = false;
+        setStatus('Model muncul. Drag untuk geser, scroll/pinch untuk zoom.');
       },
       undefined,
       (err) => {
@@ -174,14 +328,11 @@
     );
 
     animate();
+    setupInteractions();
   }
 
   function animate() {
     requestAnimationFrame(animate);
-
-    if (model) {
-      model.rotation.y += 0.01;
-    }
 
     renderer.render(scene, camera);
   }
@@ -211,6 +362,10 @@
       setStatus('Gagal akses kamera: ' + error.message);
       startBtn.disabled = false;
     }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    resetModelTransform();
   });
 
   window.addEventListener('resize', onResize);
