@@ -126,7 +126,7 @@
     <div id="status">Status: Klik Start Kamera.</div>
     <div style="margin-top: 8px; opacity: 0.9;">Model 3D akan langsung tampil di atas feed kamera laptop.</div>
   </div>
-  <div class="hint">Interaksi: drag model untuk geser, scroll/pinch untuk zoom, tombol Reset untuk posisi awal.</div>
+  <div class="hint">Interaksi: drag kiri=geser, drag kanan=rotate, scroll/pinch=zoom, twist 2 jari=rotate.</div>
 </div>
 
 <script>
@@ -142,10 +142,13 @@
   let model;
   let modelBaseScale = 0.75;
   let isDragging = false;
+  let isRotating = false;
   let lastX = 0;
   let lastY = 0;
   let pinchStartDistance = 0;
   let pinchStartScale = 0;
+  let pinchStartAngle = 0;
+  let pinchStartRotationY = 0;
 
   function clamp(val, min, max) {
     return Math.max(min, Math.min(max, val));
@@ -177,6 +180,10 @@
     return Math.hypot(dx, dy);
   }
 
+  function angleBetweenTouches(t1, t2) {
+    return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX);
+  }
+
   function setupInteractions() {
     const canvas = renderer.domElement;
 
@@ -184,13 +191,20 @@
       if (!model) {
         return;
       }
-      isDragging = true;
+
+      // Klik kiri untuk geser, klik kanan untuk rotate.
+      isDragging = event.button === 0;
+      isRotating = event.button === 2;
       lastX = event.clientX;
       lastY = event.clientY;
     });
 
+    canvas.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+    });
+
     window.addEventListener('mousemove', (event) => {
-      if (!isDragging || !model) {
+      if ((!isDragging && !isRotating) || !model) {
         return;
       }
 
@@ -199,12 +213,20 @@
       lastX = event.clientX;
       lastY = event.clientY;
 
-      model.position.x += dx * 0.0035;
-      model.position.y -= dy * 0.0035;
+      if (isDragging) {
+        model.position.x += dx * 0.0035;
+        model.position.y -= dy * 0.0035;
+      }
+
+      if (isRotating) {
+        model.rotation.y += dx * 0.01;
+        model.rotation.x = clamp(model.rotation.x + dy * 0.01, -1.2, 1.2);
+      }
     });
 
     window.addEventListener('mouseup', () => {
       isDragging = false;
+      isRotating = false;
     });
 
     canvas.addEventListener('wheel', (event) => {
@@ -232,6 +254,8 @@
         isDragging = false;
         pinchStartDistance = distanceBetweenTouches(event.touches[0], event.touches[1]);
         pinchStartScale = model.scale.x;
+        pinchStartAngle = angleBetweenTouches(event.touches[0], event.touches[1]);
+        pinchStartRotationY = model.rotation.y;
       }
     }, { passive: false });
 
@@ -258,6 +282,9 @@
         const dist = distanceBetweenTouches(event.touches[0], event.touches[1]);
         const ratio = dist / pinchStartDistance;
         setModelScale(pinchStartScale * ratio);
+
+        const angle = angleBetweenTouches(event.touches[0], event.touches[1]);
+        model.rotation.y = pinchStartRotationY + (angle - pinchStartAngle);
       }
     }, { passive: false });
 
@@ -318,7 +345,7 @@
         model.scale.set(modelBaseScale, modelBaseScale, modelBaseScale);
         scene.add(model);
         resetBtn.disabled = false;
-        setStatus('Model muncul. Drag untuk geser, scroll/pinch untuk zoom.');
+        setStatus('Model muncul. Drag kiri geser, drag kanan rotate, scroll/pinch zoom.');
       },
       undefined,
       (err) => {
