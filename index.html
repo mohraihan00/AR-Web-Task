@@ -1,0 +1,233 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+  <title>Hello WebXR - AR dengan 3D Model!</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+    }
+    #info {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 15px;
+      border-radius: 5px;
+      z-index: 100;
+      font-size: 14px;
+    }
+    button {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 15px 30px;
+      font-size: 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      z-index: 100;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+  </style>
+
+  <!-- three.js -->
+  <script src="https://unpkg.com/three@0.126.0/build/three.js"></script>
+  <!-- GLTFLoader untuk load 3D Model -->
+  <script src="https://unpkg.com/three@0.126.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+
+<!-- Info Panel -->
+<div id="info">
+  <div>WebXR AR Demo</div>
+  <div id="status">Status: Ready</div>
+</div>
+
+<!-- Tombol untuk mengaktifkan AR -->
+<button id="xrButton" onclick="activateXR()">Start AR</button>
+
+<script>
+// ============================================================
+// STEP 1: Setup Canvas dan WebGL untuk WebXR
+// ============================================================
+async function activateXR() {
+  const canvas = document.createElement("canvas");
+  document.body.appendChild(canvas);
+  const gl = canvas.getContext("webgl", {xrCompatible: true});
+
+  updateStatus("Initializing WebXR...");
+
+  // ============================================================
+  // STEP 2: Setup Scene, Camera, dan Lighting
+  // ============================================================
+  const scene = new THREE.Scene();
+
+  // Tambahkan Lighting ke scene
+  const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+  directionalLight.position.set(10, 15, 10);
+  scene.add(directionalLight);
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+  scene.add(ambientLight);
+
+  // ============================================================
+  // STEP 3: Setup Renderer
+  // ============================================================
+  const renderer = new THREE.WebGLRenderer({
+    alpha: true,
+    preserveDrawingBuffer: true,
+    canvas: canvas,
+    context: gl
+  });
+  renderer.autoClear = false;
+
+  // Setup Camera
+  const camera = new THREE.PerspectiveCamera();
+  camera.matrixAutoUpdate = false;
+
+  // ============================================================
+  // STEP 4: Inisialisasi Model Loader (untuk GLTF models)
+  // ============================================================
+  const loader = new THREE.GLTFLoader();
+  let reticle;
+  let flower;
+  let flowerHolding = false;
+
+  // Load Targeting Reticle (Ring untuk menunjukkan tempat placement)
+  loader.load("https://immersive-web.github.io/webxr-samples/media/gltf/reticle/reticle.gltf", function(gltf) {
+    reticle = gltf.scene;
+    reticle.visible = false;
+    scene.add(reticle);
+    updateStatus("Reticle loaded!");
+  }, undefined, function(error) {
+    console.error("Error loading reticle:", error);
+  });
+
+  // Load 3D Model Bunga Matahari
+  loader.load("https://raw.githubusercontent.com/mohraihan00/ar_3d_model/main/woody_-_disney_magic_kingdoms.glb", function(gltf) {
+    flower = gltf.scene;
+    updateStatus("Flower model loaded!");
+  }, undefined, function(error) {
+    console.error("Error loading flower:", error);
+  });
+
+  // ============================================================
+  // STEP 5: Setup WebXR Session
+  // ============================================================
+  const session = await navigator.xr.requestSession("immersive-ar", {
+    requiredFeatures: ['hit-test']
+  });
+
+  session.updateRenderState({
+    baseLayer: new XRWebGLLayer(session, gl)
+  });
+
+  // ============================================================
+  // STEP 6: Setup Reference Spaces untuk Hit Testing
+  // ============================================================
+  const referenceSpace = await session.requestReferenceSpace('local');
+  const viewerSpace = await session.requestReferenceSpace('viewer');
+
+  // Buat Hit Test Source (untuk mendeteksi permukaan nyata)
+  const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+  // ============================================================
+  // STEP 7: Event Listener untuk Tap/Select
+  // ============================================================
+  session.addEventListener("select", (event) => {
+    if (flower && reticle && reticle.visible) {
+      // Buat clone dari flower dan letakkan di posisi reticle
+      const clone = flower.clone();
+      clone.position.copy(reticle.position);
+      scene.add(clone);
+      updateStatus("Flower placed! Tap to place more.");
+    }
+  });
+
+  // ============================================================
+  // STEP 8: Animation Loop (Render Loop)
+  // ============================================================
+  const onXRFrame = (time, frame) => {
+    // Queue next frame
+    session.requestAnimationFrame(onXRFrame);
+
+    // Bind framebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+
+    // Get viewer pose
+    const pose = frame.getViewerPose(referenceSpace);
+    
+    if (pose) {
+      // Mobile AR hanya punya 1 view
+      const view = pose.views[0];
+      const viewport = session.renderState.baseLayer.getViewport(view);
+      renderer.setSize(viewport.width, viewport.height);
+
+      // Update camera dengan view data dari WebXR
+      camera.matrix.fromArray(view.transform.matrix);
+      camera.projectionMatrix.fromArray(view.projectionMatrix);
+      camera.updateMatrixWorld(true);
+
+      // ============================================================
+      // Hit Test: Detect real-world surfaces
+      // ============================================================
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      
+      if (hitTestResults.length > 0 && reticle) {
+        const hitPose = hitTestResults[0].getPose(referenceSpace);
+        reticle.visible = true;
+        reticle.position.setFromMatrixPosition(hitPose.transform.matrix);
+        reticle.updateMatrixWorld(true);
+      } else if (reticle) {
+        reticle.visible = false;
+      }
+
+      // Render Scene
+      renderer.render(scene, camera);
+    }
+  };
+
+  // Mulai render loop
+  session.requestAnimationFrame(onXRFrame);
+
+  updateStatus("AR Session Active! Look for surfaces...");
+  document.getElementById('xrButton').disabled = true;
+}
+
+// ============================================================
+// Helper Function
+// ============================================================
+function updateStatus(text) {
+  document.getElementById('status').textContent = 'Status: ' + text;
+}
+
+// Check WebXR Support
+if (navigator.xr) {
+  navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+    if (!supported) {
+      document.getElementById('xrButton').disabled = true;
+      updateStatus("AR tidak didukung di device ini");
+    }
+  });
+} else {
+  document.getElementById('xrButton').disabled = true;
+  updateStatus("WebXR tidak didukung");
+}
+</script>
+</body>
+</html>
